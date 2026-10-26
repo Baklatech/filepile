@@ -37,6 +37,7 @@ LABEL = "\x1b[0;1;38;2;255;255;255;48;2;24;22;28m"
 
 MAX_ITEMS = 250     # больше в кучу не валим: и смотреть не на что, и раскладка тормозит
 FALL = 0.35         # за сколько секунд предмет долетает до кучи
+TOSS = 0.9          # сколько летит подброшенный при встряске предмет, если взлетел на высоту окна
 SINK = 1            # предметы чуть вдавлены друг в друга — так куча выглядит слежавшейся
 
 # пропорции предмета (ширина, высота) от базового размера
@@ -625,7 +626,7 @@ class Pile:
         self.sel = None
         self.cam = -2       # высота нижней строки пикселей экрана; -2 — видно землю
         self.t0 = -1e9
-        self.stagger = 0.0
+        self.toss_from = None   # где лежали предметы до встряски: путь -> (x, b)
         self.note = ""
         self.note_until = 0.0
         self.hint_until = 0.0
@@ -673,14 +674,28 @@ class Pile:
         self.size = (cols, height)
         if self.animate:
             self.t0 = time.monotonic()
-            self.stagger = min(0.035, 0.8 / max(1, len(self.pile)))
             self.animate = False
+            stagger = min(0.035, 0.8 / max(1, len(self.pile)))
+            rnd = random.Random(seed)
+            frm = self.toss_from or {}
+            for it in self.pile:
+                if it["path"] in frm:
+                    # подброшен из того места, где лежал: чем тяжелее, тем ниже взлетает
+                    it["from"] = frm[it["path"]]
+                    it["peak"] = height * rnd.uniform(0.2, 0.55) * (1.1 - 0.5 * it["weight"])
+                    it["t_start"] = self.t0 + rnd.uniform(0, 0.08)
+                    it["t_land"] = it["t_start"] + TOSS * math.sqrt(it["peak"] / height) + 0.15
+                else:
+                    it["from"] = None
+                    it["t_start"] = self.t0 + it["seq"] * stagger
+                    it["t_land"] = it["t_start"] + FALL
+        self.toss_from = None
 
     def falling(self, now):
-        return now < self.t0 + self.stagger * len(self.pile) + FALL + 0.2
+        return any(now < it.get("t_land", 0) + 0.2 for it in self.pile)
 
     def landed(self, it, now):
-        return now - self.t0 - it["seq"] * self.stagger - FALL
+        return now - it.get("t_land", 0)
 
     def follow(self, H):
         """Двигаем камеру так, чтобы выбранный предмет и подпись над ним были видны."""
@@ -771,21 +786,25 @@ def build_frame(p, cols, rows, now):
         for x in range(cols):
             put(x, hgt, SOIL_DARK if (x * 7 + hgt * 3) % 5 == 0 else SOIL)
     for it in p.pile:
-        b = it["b"]
-        if falling:
-            t = p.landed(it, now)
-            if t < -FALL:
+        x, b = it["x"], it["b"]
+        if falling and p.landed(it, now) < 0:
+            start, land = it["t_start"], it["t_land"]
+            u = clamp((now - start) / (land - start))
+            if it["from"]:      # летит по дуге со старого места на новое
+                x0, b0 = it["from"]
+                x = round(x0 + (x - x0) * u)
+                b = round(b0 + (b - b0) * u + it["peak"] * 4 * u * (1 - u))
+            elif now < start:
                 continue        # ещё не начал падать
-            if t < 0:
-                drop = max(4, p.cam + H + 2 - b)
-                b += round(drop * (t / FALL) ** 2)
+            else:
+                b += round(max(4, p.cam + H + 2 - b) * (1 - u) ** 2)
         lit = it is p.sel and pulse and not falling
         top = b + it["h"] - 1
         for (dx, dy), c in it["spr"].items():
-            put(it["x"] + dx, top - dy, mix(c, WHITE, 0.4) if lit else c)
+            put(x + dx, top - dy, mix(c, WHITE, 0.4) if lit else c)
         if falling and 0 <= p.landed(it, now) < 0.18:      # пыль при приземлении
             for dx, dh in ((-1, 0), (-2, 1), (it["w"], 0), (it["w"] + 1, 1)):
-                put(it["x"] + dx, b + dh, DUST)
+                put(x + dx, b + dh, DUST)
 
     texts = []
     if not p.pile:
@@ -960,6 +979,7 @@ def handle_key(key, p):
         p.refilter()
     elif key == "s":
         p.shake += 1
+        p.toss_from = {it["path"]: (it["x"], it["b"]) for it in p.pile}
         p.refilter(animate=True)
     elif key == "r":
         p.open(p.path, select=sel["name"] if sel else None, animate=False)
