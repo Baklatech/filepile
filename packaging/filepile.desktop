@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=filepile
+GenericName=File manager
+Comment=Terminal file browser that shows a directory as a pile of junk
+Comment[ru]=Консольный проводник: папка выглядит как куча хлама
+Exec=filepile
+Terminal=true
+Icon=filepile
+Categories=Utility;FileManager;ConsoleOnly;
+Keywords=files;file manager;explorer;junk;tui;
