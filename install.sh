@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Ставит filepile в систему — одинаково на Omarchy, Arch и Debian-based:
 # копирует программу, ярлык для лаунчера и иконку. На Omarchy ещё добавляет
-# пункт в меню и предлагает сделать окно непрозрачным.
+# пункт в меню, сочетание SUPER+CTRL+SHIFT+F и предлагает сделать окно
+# непрозрачным.
 #
 #   ./install.sh              в /usr/local (спросит sudo)
 #   ./install.sh --user       в ~/.local, без sudo
 #   ./install.sh --opaque     непрозрачное окно, не спрашивая (--no-opaque — убрать)
+#   ./install.sh --no-hotkey  без сочетания клавиш (и убрать, если было)
 #   ./install.sh --uninstall  удалить (вместе с --user — из ~/.local)
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -15,13 +17,15 @@ PREFIX=/usr/local
 SUDO=sudo
 ACTION=install
 OPAQUE=ask
+HOTKEY=yes
 for arg in "$@"; do
   case $arg in
     --user) PREFIX=$HOME/.local SUDO= ;;
     --uninstall) ACTION=uninstall ;;
     --opaque) OPAQUE=yes ;;
     --no-opaque) OPAQUE=no ;;
-    *) echo "usage: $0 [--user] [--opaque|--no-opaque] [--uninstall]" >&2; exit 2 ;;
+    --no-hotkey) HOTKEY=no ;;
+    *) echo "usage: $0 [--user] [--opaque|--no-opaque] [--no-hotkey] [--uninstall]" >&2; exit 2 ;;
   esac
 done
 (( EUID == 0 )) && SUDO=
@@ -32,6 +36,7 @@ ICON=$PREFIX/share/icons/hicolor/scalable/apps/filepile.svg
 MENU=${OMARCHY_MENU_FILE:-$HOME/.config/omarchy/extensions/omarchy-menu.jsonc}
 MENU_DEFAULT=/usr/share/omarchy/config/omarchy/extensions/omarchy-menu.jsonc
 HYPR=${HYPR_CONFIG_FILE:-$HOME/.config/hypr/hyprland.lua}
+BINDINGS=${HYPR_BINDINGS_FILE:-$HOME/.config/hypr/bindings.lua}
 
 is_omarchy() { command -v omarchy-menu >/dev/null || [[ -d $HOME/.config/omarchy ]]; }
 
@@ -108,6 +113,45 @@ opaque_setup() {
   if [[ $want == yes ]]; then opaque_add; else opaque_remove; fi
 }
 
+# Сочетание выбрано так, чтобы не пересекаться со стандартными в Omarchy
+# (рядом SUPER+SHIFT+F — файловый менеджер). Если его занял кто-то ещё,
+# ничего не перебиваем. Строка тоже лежит между маркерами.
+hotkey_has() { [[ -f $BINDINGS ]] && grep -q '^-- >>> filepile >>>$' "$BINDINGS"; }
+
+hotkey_strip() { sed -i '/^-- >>> filepile >>>$/,/^-- <<< filepile <<<$/d' "$BINDINGS"; }
+
+hotkey_remove() {
+  hotkey_has || return 0
+  backup "$BINDINGS"
+  hotkey_strip
+  echo "сочетание SUPER+CTRL+SHIFT+F убрано из $BINDINGS"
+}
+
+# занято ли сочетание чем-то, кроме самого filepile (SUPER=64 + CTRL=4 + SHIFT=1)
+hotkey_busy() {
+  command -v hyprctl >/dev/null || return 1
+  hyprctl binds -j 2>/dev/null | python3 -c '
+import json, sys
+sys.exit(0 if any(b["modmask"] == 69 and b["key"].upper() == "F" and "filepile" not in b["arg"]
+                  for b in json.load(sys.stdin)) else 1)'
+}
+
+hotkey_add() {
+  # строка написана под Lua-конфиг Omarchy; в других местах ей делать нечего
+  [[ -f $BINDINGS ]] || return 0
+  if hotkey_busy; then
+    echo "SUPER+CTRL+SHIFT+F уже чем-то занято — сочетание для filepile не добавлено" >&2
+    return 0
+  fi
+  backup "$BINDINGS"
+  hotkey_has && hotkey_strip
+  [[ -z $(tail -c1 "$BINDINGS") ]] || echo >>"$BINDINGS"
+  printf '%s\n' '-- >>> filepile >>>' \
+    "o.bind(\"SUPER + CTRL + SHIFT + F\", \"Filepile\", { tui = \"$BIN\", focus = true })" \
+    '-- <<< filepile <<<' >>"$BINDINGS"
+  echo "filepile открывается по SUPER+CTRL+SHIFT+F (строка в $BINDINGS)"
+}
+
 refresh_caches() {
   if command -v gtk-update-icon-cache >/dev/null; then
     $SUDO gtk-update-icon-cache -q -t -f "$PREFIX/share/icons/hicolor" 2>/dev/null || true
@@ -120,8 +164,8 @@ refresh_caches() {
 if [[ $ACTION == uninstall ]]; then
   $SUDO rm -f "$BIN" "$DESKTOP" "$ICON"
   refresh_caches
-  if is_omarchy; then menu_remove; opaque_remove; fi
-  echo "filepile удалён из $PREFIX (настройки в ~/.config/filepile не тронуты)"
+  if is_omarchy; then menu_remove; opaque_remove; hotkey_remove; fi
+  echo "filepile удалён из $PREFIX"
   exit 0
 fi
 
@@ -140,7 +184,11 @@ $SUDO install -Dm755 filepile.py "$BIN"
 $SUDO install -Dm644 "$tmp" "$DESKTOP"
 $SUDO install -Dm644 packaging/filepile.svg "$ICON"
 refresh_caches
-if is_omarchy; then menu_add; opaque_setup; fi
+if is_omarchy; then
+  menu_add
+  if [[ $HOTKEY == yes ]]; then hotkey_add; else hotkey_remove; fi
+  opaque_setup
+fi
 
 echo "готово: $BIN"
 case ":$PATH:" in

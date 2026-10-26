@@ -7,6 +7,8 @@ git clone https://github.com/Baklatech/filepile && cd filepile && ./install.sh
 filepile ~/Downloads
 ```
 
+На Omarchy открывается по `Super+Ctrl+Shift+F`.
+
 `←↑↓→` выбрать, `enter` открыть, `⌫` наверх, `.` скрытые, `/` поиск, `e` редактор, `s` встряхнуть, `q` выход.
 
 Чтобы после выхода оказаться в той папке, где остановился:

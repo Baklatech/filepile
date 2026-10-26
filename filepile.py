@@ -39,19 +39,19 @@ MAX_ITEMS = 250     # больше в кучу не валим: и смотре�
 FALL = 0.35         # за сколько секунд предмет долетает до кучи
 SINK = 1            # предметы чуть вдавлены друг в друга — так куча выглядит слежавшейся
 
-# вид предмета: как называется и пропорции (ширина, высота) от базового размера
-KINDS = {
-    "box": ("коробка", 1.0, 0.75),
-    "paper": ("бумажка", 0.8, 0.62),
-    "picture": ("картина", 1.0, 0.8),
-    "cassette": ("кассета", 1.0, 0.62),
-    "tv": ("телик", 0.95, 0.95),
-    "sack": ("мешок", 0.85, 1.0),
-    "floppy": ("дискета", 0.8, 0.8),
-    "can": ("консерва", 0.6, 0.85),
-    "battery": ("батарейка", 1.1, 0.45),
-    "log": ("бревно", 1.3, 0.45),
-    "tire": ("покрышка", 1.0, 0.55),
+# пропорции предмета (ширина, высота) от базового размера
+SHAPES = {
+    "box": (1.0, 0.75),
+    "paper": (0.8, 0.62),
+    "picture": (1.0, 0.8),
+    "cassette": (1.0, 0.62),
+    "tv": (0.95, 0.95),
+    "sack": (0.85, 1.0),
+    "floppy": (0.8, 0.8),
+    "can": (0.6, 0.85),
+    "battery": (1.1, 0.45),
+    "log": (1.3, 0.45),
+    "tire": (1.0, 0.55),
 }
 
 EXT = {}
@@ -450,7 +450,7 @@ def dress(e, count):
         weight = clamp((math.log10(e["size"] + 1) - 1.5) / 7)
     seed = zlib.crc32(e["name"].encode("utf-8", "surrogateescape"))
     s = (7 + 15 * weight) * random.Random(seed).uniform(0.9, 1.1)
-    _, kw, kh = KINDS[kind]
+    kw, kh = SHAPES[kind]
     colors = COLORS[kind]
     return dict(e, kind=kind, count=count, weight=weight, seed=seed,
                 w0=max(5, round(s * kw)), h0=max(4, round(s * kh)),
@@ -596,7 +596,7 @@ def describe(it):
         size = "битая ссылка"
     else:
         size = human(it["size"])
-    parts = [size, KINDS[it["kind"]][0], when(it["mtime"])]
+    parts = [size, when(it["mtime"])]
     if it["link"]:
         try:
             parts.append("→ " + clean(os.readlink(it["path"])))
@@ -628,6 +628,7 @@ class Pile:
         self.stagger = 0.0
         self.note = ""
         self.note_until = 0.0
+        self.hint_until = 0.0
         self.animate = False
 
     def say(self, text, secs=3):
@@ -696,9 +697,7 @@ class Pile:
             self.open(up, select=os.path.basename(self.path))
 
 
-HINT = ("←↑↓→ выбрать · enter открыть · ⌫ наверх · . скрытые · / поиск · "
-        "e редактор · s встряхнуть · q выход")
-HINT_SEARCH = "enter — оставить · esc — сбросить"
+HINT = "enter открыть · ⌫ наверх · / поиск · . скрытые · e редактор · s встряхнуть · q выход"
 
 
 def compose(px, texts, cols, crows):
@@ -791,11 +790,13 @@ def build_frame(p, cols, rows, now):
     if reserve:
         lines.append(status_line(p, cols))
         if p.searching:
-            hint = "/" + p.query + "▏  " + HINT_SEARCH
+            hint = "/" + p.query + "▏"
         elif now < p.note_until:
             hint = p.note
-        else:
+        elif now < p.hint_until:      # подсказка — только при запуске и после непонятной клавиши
             hint = HINT
+        else:
+            hint = ""
         lines.append("\x1b[2m" + cut(hint, cols) + "\x1b[0m")
     return lines
 
@@ -856,7 +857,6 @@ def open_file(p, it):
     subprocess.Popen([opener, it["path"]], stdin=subprocess.DEVNULL,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True)
-    p.say("открываю " + clean(it["name"]))
 
 
 def handle_key(key, p):
@@ -894,7 +894,7 @@ def handle_key(key, p):
             open_file(p, sel)
     elif key == "e" and sel:
         if sel["dir"]:
-            p.say("коробка в редактор не лезет")
+            p.say("внутри что-то есть...")
         else:
             return "edit"
     elif key in ("back", "-"):
@@ -904,7 +904,6 @@ def handle_key(key, p):
     elif key == ".":
         p.hidden = not p.hidden
         p.refilter(animate=True)
-        p.say("скрытые видно" if p.hidden else "скрытые спрятаны")
     elif key in ("/", "f"):
         p.searching = True
     elif key == "esc" and p.query:
@@ -915,6 +914,8 @@ def handle_key(key, p):
         p.refilter(animate=True)
     elif key == "r":
         p.open(p.path, select=sel["name"] if sel else None, animate=False)
+    elif key not in ("left", "right", "up", "down", "h", "j", "k", "l", "tab", "btab", "esc"):
+        p.hint_until = time.monotonic() + 6
     return None
 
 
@@ -950,6 +951,7 @@ def main():
         return
 
     p.refilter(animate=True)     # при запуске куча тоже падает
+    p.hint_until = time.monotonic() + 6
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     last = None
