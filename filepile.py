@@ -629,6 +629,8 @@ class Pile:
         self.note = ""
         self.note_until = 0.0
         self.hint_until = 0.0
+        self.view_h = 0
+        self.last_click = (None, 0.0)
         self.animate = False
 
     def say(self, text, secs=3):
@@ -691,6 +693,16 @@ class Pile:
                 self.cam = bottom - 2
         self.cam = max(-2, self.cam)
 
+    def item_at(self, col, row):
+        """Верхний предмет под знакоместом — по настоящим пикселям, не по рамке."""
+        for it in reversed(self.pile):      # позже нарисован — лежит сверху
+            top = it["b"] + it["h"] - 1
+            for r in (2 * row, 2 * row + 1):
+                hgt = self.cam + self.view_h - 1 - r
+                if (col - it["x"], top - hgt) in it["spr"]:
+                    return it
+        return None
+
     def parent(self):
         up = os.path.dirname(self.path)
         if up != self.path:
@@ -745,6 +757,7 @@ def build_frame(p, cols, rows, now):
     if p.size != (cols, H):
         p.relayout(cols, H)
     p.follow(H)
+    p.view_h = H
     falling = p.falling(now)
     pulse = int(now * 2.2) % 2 == 0
 
@@ -825,11 +838,24 @@ def status_line(p, cols):
 # -------------------------------------------------------------------- ввод
 
 def read_keys(fd):
-    data = os.read(fd, 64).decode("utf-8", "ignore")
+    """Клавиши строками, щелчки мыши — кортежами ("click", столбец, ряд) от нуля."""
+    data = os.read(fd, 1024).decode("utf-8", "ignore")
     seqs = {"A": "up", "B": "down", "C": "right", "D": "left", "Z": "btab"}
     keys, i = [], 0
     while i < len(data):
         ch = data[i]
+        if data.startswith("\x1b[<", i):    # мышь в режиме SGR: ESC [ < кнопка ; x ; y M|m
+            j = i + 3
+            while j < len(data) and data[j] not in "Mm":
+                j += 1
+            try:
+                btn, x, y = map(int, data[i + 3:j].split(";"))
+            except ValueError:
+                btn = -1
+            if j < len(data) and data[j] == "M" and btn == 0:   # нажатие левой, без колеса и модификаторов
+                keys.append(("click", x - 1, y - 1))
+            i = j + 1
+            continue
         if ch == "\x1b":
             if i + 2 < len(data) and data[i + 1] in "[O" and data[i + 2] in seqs:
                 keys.append(seqs[data[i + 2]])
@@ -859,10 +885,36 @@ def open_file(p, it):
                      start_new_session=True)
 
 
+def activate(p, it):
+    if it["dir"]:
+        p.open(it["path"])
+    else:
+        open_file(p, it)
+
+
+def click(p, col, row):
+    """Щелчок выделяет предмет, второй по нему же вскоре — открывает."""
+    it = p.item_at(col, row)
+    if it is None:
+        return
+    now = time.monotonic()
+    prev, t = p.last_click
+    p.searching = False
+    p.sel = it
+    if prev is it and now - t < 0.4:
+        p.last_click = (None, 0.0)
+        activate(p, it)
+    else:
+        p.last_click = (it, now)
+
+
 def handle_key(key, p):
     """Возвращает "quit", "edit" или None."""
     if key == "\x03":
         return "quit"
+    if isinstance(key, tuple):
+        click(p, key[1], key[2])
+        return None
     if p.searching:     # тут раскладку не переводим: имена бывают и русские
         if key == "enter":
             p.searching = False
@@ -888,10 +940,7 @@ def handle_key(key, p):
         i = p.items.index(sel) + (1 if key == "tab" else -1)
         p.sel = p.items[i % len(p.items)]
     elif key in ("enter", "o") and sel:
-        if sel["dir"]:
-            p.open(sel["path"])
-        else:
-            open_file(p, sel)
+        activate(p, sel)
     elif key == "e" and sel:
         if sel["dir"]:
             p.say("внутри что-то есть...")
@@ -957,12 +1006,12 @@ def main():
     last = None
 
     def enter_screen():
-        sys.stdout.write("\x1b[?1049h\x1b[?25l")
+        sys.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h")   # + мышь
         tty.setcbreak(fd)
 
     def leave_screen():
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        sys.stdout.write("\x1b[0m\x1b[?25h\x1b[?1049l")
+        sys.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[0m\x1b[?25h\x1b[?1049l")
         sys.stdout.flush()
 
     enter_screen()
